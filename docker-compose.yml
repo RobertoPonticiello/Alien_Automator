@@ -1,0 +1,70 @@
+# docker-compose per Alien Mind — pipeline n8n self-hosted.
+#
+# - Servizio n8n estende l'immagine ufficiale con sharp + better-sqlite3 (vedi Dockerfile)
+# - Volume nominato per i dati n8n (workflow, credenziali cifrate, ecc.)
+# - Bind-mount della cartella ./database per il DB SQLite delle citazioni
+# - Tutte le credenziali sono iniettate da .env (mai committato)
+services:
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: alien-mind/n8n:latest
+    container_name: alien-mind-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Localizzazione
+      - GENERIC_TIMEZONE=Europe/Rome
+      - TZ=Europe/Rome
+      # Host / Webhook (sovrascrivere WEBHOOK_URL con l'URL ngrok/cloudflare in dev)
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      - N8N_EDITOR_BASE_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      # Sicurezza: chiave per cifrare le credenziali salvate (obbligatoria, non perderla)
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Permetti import di moduli npm e built-in dentro i Code/Function Node
+      - NODE_FUNCTION_ALLOW_EXTERNAL=sharp,better-sqlite3
+      - NODE_FUNCTION_ALLOW_BUILTIN=fs,path,crypto,util,buffer,stream
+      # Path del DB SQLite citazioni (usato dai Code Node, NON dal DB interno di n8n)
+      - QUOTES_DB_PATH=/data/database/quotes.db
+      # Credenziali API (lette dai nodi tramite expression $env.NOME)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - GOOGLE_DRIVE_FOLDER_ID_DRAFTS=${GOOGLE_DRIVE_FOLDER_ID_DRAFTS}
+      - GOOGLE_DRIVE_FOLDER_ID_APPROVED=${GOOGLE_DRIVE_FOLDER_ID_APPROVED}
+      # Logging
+      - N8N_LOG_LEVEL=${N8N_LOG_LEVEL:-info}
+    volumes:
+      # Dati n8n persistiti (workflow, credenziali, history esecuzioni)
+      - n8n_data:/home/node/.n8n
+      # DB SQLite citazioni — montato come bind-mount per backup/ispezione facile
+      - ./database:/data/database
+      # Font custom per la tipografia (Sharp li carica da qui)
+      - ./assets/fonts:/data/fonts:ro
+      # Script Node.js richiamabili dai Code Node
+      - ./scripts:/data/scripts:ro
+
+# Tunnel ngrok opzionale per esporre il webhook Telegram in dev locale.
+# Avvialo con:  docker compose --profile dev up -d
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: alien-mind-ngrok
+    restart: unless-stopped
+    profiles: ["dev"]
+    command: http n8n:5678 --log=stdout
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTH_TOKEN}
+    ports:
+      - "4040:4040"  # dashboard ngrok in locale: http://localhost:4040
+    depends_on:
+      - n8n
+
+volumes:
+  n8n_data:
+    name: alien-mind-n8n-data

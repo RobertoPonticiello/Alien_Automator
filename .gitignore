@@ -1,0 +1,39 @@
+# Variabili d'ambiente — mai committare credenziali
+.env
+.env.local
+.env.*.local
+
+# Database SQLite citazioni e relativi backup
+database/*.db
+database/*.db-journal
+database/*.db-wal
+database/*.db-shm
+database/backups/
+
+# Font (li scarichi tu in locale, vedi docs/typography.md)
+assets/fonts/*
+!assets/fonts/.gitkeep
+
+# Volumi Docker locali (se montati in-tree)
+n8n_data/
+
+# Output temporanei
+*.log
+*.tmp
+tmp/
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Output dei test di composizione immagine
+scripts/test-output/
