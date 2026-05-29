@@ -1,0 +1,524 @@
+{
+  "name": "Alien Mind — Callback Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 📨 Alien Mind — Callback Telegram\n\nGestisce le 4 azioni inline button del messaggio di review:\n\n- **✅ Approva** → sposta file in cartella `approved` su Drive, UPDATE `posts.status='approved'`, conferma\n- **🔄 Rigenera img** → riusa la stessa frase, lancia il workflow principale via Execute Workflow (regenera solo l'immagine)\n- **🔁 Cambia frase** → lancia il workflow principale fresh (nuova frase + nuova immagine)\n- **❌ Scarta** → cancella file da Drive, UPDATE `posts.status='rejected'`, conferma\n\n**Webhook**: POST /webhook/alien-mind-callback\n\nDopo l'import, **registra il webhook su Telegram**:\n```\ncurl 'https://api.telegram.org/bot<TOKEN>/setWebhook?url=<WEBHOOK_URL>/webhook/alien-mind-callback'\n```\n\n**Caveat**: il nodo \"Execute alien-mind-pipeline\" referenzia il workflow per ID. Dopo aver importato il workflow principale, aggiorna l'ID nel nodo (n8n te lo chiede al primo run).",
+        "height": 460,
+        "width": 540
+      },
+      "id": "stickyHeader",
+      "name": "📋 Header",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alien-mind-callback",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook Telegram",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [400, 380],
+      "webhookId": "alien-mind-callback"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parsa il callback_query Telegram. Estrai action, post_id, e i metadati per editare il messaggio dopo.\nconst body = $input.first().json.body || $input.first().json;\nconst cq = body.callback_query;\n\nif (!cq || !cq.data) {\n  // Update non-callback (es. messaggio ordinario): non gestito.\n  throw new Error('Update Telegram senza callback_query.data — payload: ' + JSON.stringify(body).slice(0, 300));\n}\n\nconst [action, postIdStr] = String(cq.data).split(':');\nconst post_id = parseInt(postIdStr, 10);\n\nif (!Number.isFinite(post_id) || !['approve','regen','change','discard'].includes(action)) {\n  throw new Error('callback_data non riconosciuto: ' + cq.data);\n}\n\n// Carica i dettagli del post + quote dal DB.\nconst Database = require('better-sqlite3');\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\nconst db = new Database(DB_PATH, { readonly: true });\nlet post, quote;\ntry {\n  post = db.prepare('SELECT * FROM posts WHERE id = ?').get(post_id);\n  if (!post) throw new Error('Post non trovato: id=' + post_id);\n\n  const table = post.quote_source === 'curated' ? 'quotes' : 'generated_quotes';\n  quote = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(post.quote_id);\n} finally {\n  db.close();\n}\n\n// Estrai il drive file_id dall'URL (formato webViewLink: https://drive.google.com/file/d/<ID>/view)\nlet drive_file_id = null;\nif (post.image_url_drive) {\n  const m1 = post.image_url_drive.match(/\\/d\\/([^\\/?]+)/);\n  const m2 = post.image_url_drive.match(/[?&]id=([^&]+)/);\n  drive_file_id = (m1 && m1[1]) || (m2 && m2[1]) || null;\n}\n\nreturn [{\n  json: {\n    action,\n    post_id,\n    post_status: post.status,\n    quote_source: post.quote_source,\n    drive_file_id,\n    drive_url: post.image_url_drive,\n    // Quote details (utili per regen)\n    quote_id:   quote ? quote.id : null,\n    quote_text: quote ? quote.text : null,\n    author:     quote ? quote.author : null,\n    source:     quote ? quote.source : null,\n    theme:      quote ? quote.theme : null,\n    mood:       quote ? quote.mood : null,\n    // Meta Telegram per answerCallbackQuery + editMessage\n    callback_query_id: cq.id,\n    chat_id:    cq.message && cq.message.chat ? cq.message.chat.id : null,\n    message_id: cq.message ? cq.message.message_id : null\n  }\n}];\n"
+      },
+      "id": "codeParse",
+      "name": "Parse callback + load post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 380]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "approve",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approve"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "discard",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "discard"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "regen",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "regen"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "change",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "change"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switchAction",
+      "name": "Switch azione",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [880, 380]
+    },
+    {
+      "parameters": {
+        "content": "### ✅ APPROVE\n\n1. Sposta file su Drive: `drafts/` → `approved/`\n2. UPDATE post.status = 'approved' + approved_at\n3. Telegram answerCallbackQuery + edit message",
+        "height": 200,
+        "width": 320
+      },
+      "id": "stickyApprove",
+      "name": "✅ Note: Approve",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1140, -120]
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.drive_file_id }}"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_DRIVE_FOLDER_ID_APPROVED }}"
+        },
+        "options": {}
+      },
+      "id": "driveMoveApprove",
+      "name": "Drive: move to approved",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1160, 80],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// UPDATE post status='approved' + approved_at\nconst Database = require('better-sqlite3');\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\n\nconst ctx = $('Parse callback + load post').first().json;\n\nconst db = new Database(DB_PATH);\ntry {\n  db.prepare(`\n    UPDATE posts\n    SET status = 'approved', approved_at = CURRENT_TIMESTAMP\n    WHERE id = ?\n  `).run(ctx.post_id);\n} finally {\n  db.close();\n}\n\nreturn [{ json: { ...ctx, action_result: 'approved' } }];\n"
+      },
+      "id": "codeApproveDb",
+      "name": "DB: status=approved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 80]
+    },
+    {
+      "parameters": {
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_query_id }}",
+        "additionalFields": {
+          "text": "✅ Approvato",
+          "show_alert": false
+        }
+      },
+      "id": "telegramAckApprove",
+      "name": "Telegram ack (approve)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1620, 80],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "messageType": "inlineMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "messageId": "={{ $json.message_id }}",
+        "text": "={{ '✅ APPROVATO\\n\\n\"' + $json.quote_text + '\"\\n— ' + $json.author + '\\n\\npost #' + $json.post_id }}",
+        "additionalFields": {}
+      },
+      "id": "telegramEditApprove",
+      "name": "Telegram edit msg (approve)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1840, 80],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      },
+      "notes": "Edita il caption del messaggio per togliere i bottoni e segnare lo stato. Se il messaggio originale era una foto, l'edit potrebbe richiedere editMessageCaption invece di editMessageText. Tweak in UI se serve."
+    },
+    {
+      "parameters": {
+        "content": "### ❌ DISCARD\n\n1. Drive: delete file\n2. UPDATE post.status = 'rejected'\n3. Telegram answerCallbackQuery + edit message",
+        "height": 200,
+        "width": 320
+      },
+      "id": "stickyDiscard",
+      "name": "❌ Note: Discard",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1140, 1080]
+    },
+    {
+      "parameters": {
+        "operation": "deleteFile",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.drive_file_id }}"
+        }
+      },
+      "id": "driveDeleteDiscard",
+      "name": "Drive: delete file",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1160, 1280],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const Database = require('better-sqlite3');\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\n\nconst ctx = $('Parse callback + load post').first().json;\n\nconst db = new Database(DB_PATH);\ntry {\n  db.prepare(`UPDATE posts SET status = 'rejected' WHERE id = ?`).run(ctx.post_id);\n} finally {\n  db.close();\n}\n\nreturn [{ json: { ...ctx, action_result: 'rejected' } }];\n"
+      },
+      "id": "codeDiscardDb",
+      "name": "DB: status=rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 1280]
+    },
+    {
+      "parameters": {
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_query_id }}",
+        "additionalFields": {
+          "text": "❌ Scartato",
+          "show_alert": false
+        }
+      },
+      "id": "telegramAckDiscard",
+      "name": "Telegram ack (discard)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1620, 1280],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "messageType": "inlineMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "messageId": "={{ $json.message_id }}",
+        "text": "={{ '❌ SCARTATO\\n\\n\"' + $json.quote_text + '\"\\n— ' + $json.author + '\\n\\npost #' + $json.post_id }}",
+        "additionalFields": {}
+      },
+      "id": "telegramEditDiscard",
+      "name": "Telegram edit msg (discard)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1840, 1280],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "### 🔄 REGEN (rigenera immagine)\n\nRichiama `alien-mind-pipeline` passando i campi quote (quote_id, quote_text, author, source, theme, mood). La pipeline rileva `is_reused` e salta la decisione + l'UPDATE used_count, generando solo nuovo prompt visivo + immagine.",
+        "height": 220,
+        "width": 360
+      },
+      "id": "stickyRegen",
+      "name": "🔄 Note: Regen",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1140, 380]
+    },
+    {
+      "parameters": {
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_query_id }}",
+        "additionalFields": {
+          "text": "🔄 Rigenero immagine, attendi…",
+          "show_alert": false
+        }
+      },
+      "id": "telegramAckRegen",
+      "name": "Telegram ack (regen)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1180, 580],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "alien-mind-pipeline",
+          "cachedResultName": "Alien Mind — Pipeline principale"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_type": "={{ $json.quote_source }}",
+            "quote_id":    "={{ $json.quote_id }}",
+            "quote_text":  "={{ $json.quote_text }}",
+            "author":      "={{ $json.author }}",
+            "source":      "={{ $json.source }}",
+            "theme":       "={{ $json.theme }}",
+            "mood":        "={{ $json.mood }}"
+          },
+          "schema": [],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "executeMainRegen",
+      "name": "Execute alien-mind-pipeline (regen)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [1420, 580],
+      "notes": "Dopo aver importato il main pipeline, sostituisci 'workflowId.value' con l'ID effettivo del workflow nella tua n8n (Settings → Workflow → ID)."
+    },
+    {
+      "parameters": {
+        "content": "### 🔁 CHANGE (cambia frase)\n\nRichiama `alien-mind-pipeline` SENZA passare la quote. La pipeline pesca/genera ex-novo (70/30) e produce un nuovo contenuto.",
+        "height": 180,
+        "width": 360
+      },
+      "id": "stickyChange",
+      "name": "🔁 Note: Change",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1140, 760]
+    },
+    {
+      "parameters": {
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_query_id }}",
+        "additionalFields": {
+          "text": "🔁 Cambio frase, attendi…",
+          "show_alert": false
+        }
+      },
+      "id": "telegramAckChange",
+      "name": "Telegram ack (change)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1180, 940],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "alien-mind-pipeline",
+          "cachedResultName": "Alien Mind — Pipeline principale"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "schema": [],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "executeMainChange",
+      "name": "Execute alien-mind-pipeline (change)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [1420, 940]
+    }
+  ],
+  "connections": {
+    "Webhook Telegram": {
+      "main": [
+        [
+          { "node": "Parse callback + load post", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse callback + load post": {
+      "main": [
+        [
+          { "node": "Switch azione", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Switch azione": {
+      "main": [
+        [
+          { "node": "Drive: move to approved", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Drive: delete file", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Telegram ack (regen)", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Telegram ack (change)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Drive: move to approved": {
+      "main": [
+        [
+          { "node": "DB: status=approved", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "DB: status=approved": {
+      "main": [
+        [
+          { "node": "Telegram ack (approve)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Telegram ack (approve)": {
+      "main": [
+        [
+          { "node": "Telegram edit msg (approve)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Drive: delete file": {
+      "main": [
+        [
+          { "node": "DB: status=rejected", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "DB: status=rejected": {
+      "main": [
+        [
+          { "node": "Telegram ack (discard)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Telegram ack (discard)": {
+      "main": [
+        [
+          { "node": "Telegram edit msg (discard)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Telegram ack (regen)": {
+      "main": [
+        [
+          { "node": "Execute alien-mind-pipeline (regen)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Telegram ack (change)": {
+      "main": [
+        [
+          { "node": "Execute alien-mind-pipeline (change)", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "alien-mind-error",
+    "timezone": "Europe/Rome"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "alien-mind-callback",
+  "tags": [
+    { "name": "alien-mind" }
+  ]
+}

@@ -26,13 +26,14 @@ services:
       - N8N_EDITOR_BASE_URL=${WEBHOOK_URL:-http://localhost:5678/}
       # Sicurezza: chiave per cifrare le credenziali salvate (obbligatoria, non perderla)
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-      # Permetti import di moduli npm e built-in dentro i Code/Function Node
+      # Permetti import di moduli npm e built-in dentro i Code/Function Node.
+      # NODE_PATH e' gia' impostato nel Dockerfile a /usr/local/lib/node_modules.
       - NODE_FUNCTION_ALLOW_EXTERNAL=sharp,better-sqlite3
       - NODE_FUNCTION_ALLOW_BUILTIN=fs,path,crypto,util,buffer,stream
       # Path del DB SQLite citazioni (usato dai Code Node, NON dal DB interno di n8n)
       - QUOTES_DB_PATH=/data/database/quotes.db
-      # Credenziali API (lette dai nodi tramite expression $env.NOME)
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Credenziali API (lette dai nodi tramite expression $env.NOME).
+      # OpenAI gestisce sia testo (gpt-5-mini) sia immagini (gpt-image-1.5) — un'unica chiave.
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}

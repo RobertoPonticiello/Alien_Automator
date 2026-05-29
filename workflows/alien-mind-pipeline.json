@@ -1,0 +1,552 @@
+{
+  "name": "Alien Mind — Pipeline principale",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🛸 Alien Mind — Pipeline principale\n\nGenera UN contenuto Instagram per esecuzione:\n1. Decide se pescare una citazione curata (70%) o generarne una nuova con OpenAI (30%)\n2. Trasforma la frase in immagine surreale via GPT Image 1.5\n3. Compone la tipografia con Sharp\n4. Salva su Google Drive (drafts)\n5. Manda a Telegram per review umana con 4 bottoni inline\n\n**Trigger**: Manuale (testing) o Schedule (disattivato di default).\n\n**Crediti richiesti** (Settings → Credentials) — **una sola API key OpenAI** copre tutto:\n- `OpenAI` (testo gpt-5-mini + immagini gpt-image-1.5)\n- `Telegram Bot`\n- `Google Drive OAuth2 API`\n\n**Variabili .env usate** (passate da docker-compose):\n- TELEGRAM_CHAT_ID, GOOGLE_DRIVE_FOLDER_ID_DRAFTS, QUOTES_DB_PATH",
+        "height": 380,
+        "width": 540
+      },
+      "id": "stickyHeader",
+      "name": "📋 Header",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-200, -120]
+    },
+    {
+      "parameters": {},
+      "id": "manualTrigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [380, 200]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "scheduleTrigger",
+      "name": "Schedule Trigger (off)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [380, 400],
+      "disabled": true,
+      "notes": "Schedule giornaliero alle 09:00 Europe/Rome. Attiva quando sei pronto a girare in produzione."
+    },
+    {
+      "parameters": {},
+      "id": "executeWorkflowTrigger",
+      "name": "Da workflow (callback)",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [380, 580],
+      "notes": "Invocato da alien-mind-callback per regen/change. Riceve in input {quote_text, author, theme, mood, ...} per riusare la stessa frase, oppure niente per ricominciare da zero."
+    },
+    {
+      "parameters": {
+        "content": "### 1. Decisione sorgente\n\n**Logica**: 70% citazione curata dal DB / 30% genera nuova frase con OpenAI gpt-5-mini.\n\nSe curated: pesca con priorità *usate meno* + *non usate da > 90 giorni* + RANDOM tiebreaker.\n\nSe il DB è vuoto, fallback automatico a `generated`.",
+        "height": 220,
+        "width": 320
+      },
+      "id": "stickyDecide",
+      "name": "🎲 Note: Decisione sorgente",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [620, 80]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Decide la sorgente della frase.\n// Tre casi:\n//  1. Input ricevuto da callback (regen) -> riusa la frase passata, flag is_reused\n//  2. 30% -> rotta verso \"Genera frase con OpenAI\"\n//  3. 70% -> pesca curata dal DB (priorita' fairness)\nconst Database = require('better-sqlite3');\n\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\nconst PROBABILITY_GENERATED = 0.30;\n\nconst incoming = $input.first() ? $input.first().json : {};\n\n// Caso 1: invocato da callback con quote gia' decisa\nif (incoming && incoming.quote_text && incoming.theme && incoming.mood) {\n  return [{\n    json: {\n      source_type: incoming.source_type || 'curated',\n      is_reused:   true,\n      quote_id:    incoming.quote_id,\n      quote_text:  incoming.quote_text,\n      author:      incoming.author,\n      source:      incoming.source,\n      theme:       incoming.theme,\n      mood:        incoming.mood\n    }\n  }];\n}\n\n// Caso 2/3: 70/30\nconst useGenerated = Math.random() < PROBABILITY_GENERATED;\n\nif (useGenerated) {\n  return [{\n    json: { source_type: 'generated' }\n  }];\n}\n\nconst db = new Database(DB_PATH, { readonly: true });\ntry {\n  const row = db.prepare(`\n    SELECT id, text, author, source, theme, mood\n    FROM quotes\n    WHERE last_used_at IS NULL\n       OR julianday('now') - julianday(last_used_at) > 90\n    ORDER BY used_count ASC, COALESCE(last_used_at, '1970-01-01') ASC, RANDOM()\n    LIMIT 1\n  `).get();\n\n  if (!row) {\n    return [{ json: { source_type: 'generated' } }];\n  }\n\n  return [{\n    json: {\n      source_type: 'curated',\n      quote_id:   row.id,\n      quote_text: row.text,\n      author:     row.author,\n      source:     row.source,\n      theme:      row.theme,\n      mood:       row.mood\n    }\n  }];\n} finally {\n  db.close();\n}\n"
+      },
+      "id": "codeDecideSource",
+      "name": "Decidi sorgente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.source_type }}",
+                    "rightValue": "curated",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "curated"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.source_type }}",
+                    "rightValue": "generated",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generated"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switchSource",
+      "name": "Switch sorgente",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "content": "### 2a. Branch CURATED\n\nIncrementa `used_count` e setta `last_used_at = now`. La fairness rotation funziona perché il pick (nodo precedente) ordina per `used_count ASC`.",
+        "height": 180,
+        "width": 320
+      },
+      "id": "stickyCurated",
+      "name": "📚 Note: Branch curated",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1140, 80]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Aggiorna used_count e last_used_at della citazione curata appena pescata.\n// Skip se la frase e' stata riusata (regen via callback): l'aggiornamento e' gia' avvenuto al primo pick.\nconst Database = require('better-sqlite3');\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\n\nconst item = $input.first().json;\n\nif (!item.is_reused && item.quote_id) {\n  const db = new Database(DB_PATH);\n  try {\n    db.prepare(`\n      UPDATE quotes\n      SET used_count   = used_count + 1,\n          last_used_at = CURRENT_TIMESTAMP\n      WHERE id = ?\n    `).run(item.quote_id);\n  } finally {\n    db.close();\n  }\n}\n\n// Pass-through: Merge a valle si aspetta gli stessi campi.\nreturn [{ json: item }];\n"
+      },
+      "id": "codeUpdateCurated",
+      "name": "Aggiorna used_count",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 220]
+    },
+    {
+      "parameters": {
+        "content": "### 2b. Branch GENERATED\n\nOpenAI gpt-5-mini produce UNA frase aforistica nello stile Alien Mind, output JSON stretto (response_format=json_object). Salviamo in `generated_quotes` (con `quality_score=NULL`, lo metti tu a posteriori 1-5).\n\n**Il system prompt finale arriva nello Step 4** — qui c'è una versione lavorativa che gira già.",
+        "height": 220,
+        "width": 360
+      },
+      "id": "stickyGenerated",
+      "name": "✨ Note: Branch generated",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1140, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-5-mini\",\n  \"messages\": [\n    { \"role\": \"system\", \"content\": \"Sei il copywriter del profilo Instagram 'Alien Mind'. Pubblica aforismi taglienti e letterari nello stile di Eraclito, Mezzosangue, Caparezza, Nietzsche, Cioran. Stile aforistico, mai didascalico, mai tossico-positivo. Lunghezza 8-25 parole. Niente '!', niente emoji, mai prescrittivo. Genera UNA frase originale nello stile target. Output: JSON stretto con campi {text, theme, mood, structure_used}. theme: uno tra consapevolezza_sé | individualità_vs_società | verità_e_illusione | morte_e_vita | autenticità | presente | paradossi_esistenziali. mood: uno tra solenne | tagliente | intimo | onirico | provocatorio. structure_used: uno tra binaria | paradosso | inversione | lirica.\" },\n    { \"role\": \"user\", \"content\": \"Genera ora la frase. Rispondi SOLO con il JSON.\" }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"max_completion_tokens\": 600\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "httpOpenAIGenerate",
+      "name": "Genera frase con OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1160, 560],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI"
+        }
+      },
+      "notes": "System prompt finale: vedi Step 4. Quello qui è una versione lavorativa funzionante. response_format=json_object garantisce JSON valido."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parsa la risposta di OpenAI Chat Completions e salva in `generated_quotes`.\nconst Database = require('better-sqlite3');\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\n\nconst response = $input.first().json;\nconst rawText = (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) || '';\n\n// Con response_format=json_object dovrebbe essere gia' JSON pulito,\n// ma teniamo una rete di sicurezza per estrarre la prima coppia di {} se serve.\nconst cleaned = rawText\n  .replace(/^[\\s\\S]*?({[\\s\\S]*})[\\s\\S]*$/, '$1')\n  .trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error('Risposta OpenAI non e\\' JSON valido. Raw: ' + rawText.slice(0, 300));\n}\n\nif (!parsed.text || !parsed.theme || !parsed.mood) {\n  throw new Error('JSON mancante campi obbligatori (text/theme/mood). Raw: ' + cleaned);\n}\n\nconst sourceTag = `gpt-5-mini / structure=${parsed.structure_used || 'unknown'}`;\n\nconst db = new Database(DB_PATH);\nlet generatedId;\ntry {\n  const result = db.prepare(`\n    INSERT INTO generated_quotes (text, author, source, theme, mood)\n    VALUES (?, 'Alien Mind', ?, ?, ?)\n  `).run(parsed.text, sourceTag, parsed.theme, parsed.mood);\n  generatedId = result.lastInsertRowid;\n} finally {\n  db.close();\n}\n\nreturn [{\n  json: {\n    source_type: 'generated',\n    quote_id:    generatedId,\n    quote_text:  parsed.text,\n    author:      'Alien Mind',\n    source:      sourceTag,\n    theme:       parsed.theme,\n    mood:        parsed.mood\n  }\n}];\n"
+      },
+      "id": "codeSaveGenerated",
+      "name": "Salva generated_quote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 560]
+    },
+    {
+      "parameters": {
+        "content": "### 3. Merge\n\nUno solo dei due rami a monte ha prodotto output (per via dello Switch). Il Merge in modalità *append* fa passare quel singolo item.",
+        "height": 180,
+        "width": 320
+      },
+      "id": "stickyMerge",
+      "name": "🔀 Note: Merge",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1620, 80]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "mergeBranches",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1640, 380]
+    },
+    {
+      "parameters": {
+        "content": "### 4. OpenAI → prompt visivo\n\ngpt-5-mini analizza la frase e produce un prompt in inglese per GPT Image 1.5 che NON illustri letteralmente la frase ma crei tensione semantica. Output JSON con `visual_prompt_en, composition_notes, color_palette, text_position`.\n\n**Il system prompt finale arriva nello Step 5.**",
+        "height": 220,
+        "width": 360
+      },
+      "id": "stickyVisual",
+      "name": "🎨 Note: Prompt visivo",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1900, 80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-5-mini\",\n  \"messages\": [\n    { \"role\": \"system\", \"content\": \"Sei art director di 'Alien Mind' — profilo Instagram di immagini surreali ispirate a Magritte, Beksinski, dipinti onirici. Mai foto realistiche, mai lifestyle Pinterest, mai pastelli soft. Ricevi una frase aforistica in italiano e produci UN prompt in INGLESE per GPT Image 1.5 (4:5 portrait 1024x1536). Principio chiave: l'immagine NON illustra letteralmente la frase ma crea tensione semantica con essa. Stile: surrealist painting, alta saturazione di contrasti (notti blu profondo + ocra deserto + nero + rosso cremisi), figure umane stilizzate, scheletri, riflessi, mondi capovolti, paesaggi cosmici. Rispondi SOLO con JSON: {visual_prompt_en, composition_notes, color_palette: array di 2-4 colori, text_position: 'top'|'bottom'|'split', negative_elements: array}.\" },\n    { \"role\": \"user\", \"content\": \"Frase: {{ $json.quote_text.replace(/\\\"/g, '\\\\\\\"') }}\\n\\nTema: {{ $json.theme }} — Mood: {{ $json.mood }}\\n\\nGenera il prompt visivo. Output: JSON.\" }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"max_completion_tokens\": 1000\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "httpOpenAIVisual",
+      "name": "Prompt visivo con OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1900, 380],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI"
+        }
+      },
+      "notes": "System prompt finale: vedi Step 5. response_format=json_object garantisce JSON valido."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parsa il JSON visivo prodotto da OpenAI e lo passa al nodo successivo (immagini).\nconst response = $input.first().json;\nconst rawText = (response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content) || '';\nconst cleaned = rawText.replace(/^[\\s\\S]*?({[\\s\\S]*})[\\s\\S]*$/, '$1').trim();\n\nlet visual;\ntry {\n  visual = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error('Visual JSON non parsabile. Raw: ' + rawText.slice(0, 300));\n}\n\nif (!visual.visual_prompt_en) {\n  throw new Error('Manca visual_prompt_en nel JSON visual.');\n}\n\n// Combina con i campi del quote (vengono dal Merge upstream).\nconst quote = $('Merge').first().json;\n\nreturn [{\n  json: {\n    ...quote,\n    visual_prompt_en:   visual.visual_prompt_en,\n    composition_notes:  visual.composition_notes || '',\n    color_palette:      visual.color_palette || [],\n    text_position:      visual.text_position || 'bottom',\n    negative_elements:  visual.negative_elements || []\n  }\n}];\n"
+      },
+      "id": "codeParseVisual",
+      "name": "Parse visual JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2120, 380]
+    },
+    {
+      "parameters": {
+        "content": "### 5. GPT Image 1.5 → immagine base\n\n`gpt-image-1.5` (default 2026, ~$0.20/img high 1024x1536). Risposta in `data[0].b64_json`.\n\nSe la tua org non e' verificata, fallback su `gpt-image-1` (+25% costo).",
+        "height": 200,
+        "width": 360
+      },
+      "id": "stickyOpenAI",
+      "name": "🖼️ Note: GPT Image",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2360, 80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/images/generations",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-image-1.5\",\n  \"prompt\": {{ JSON.stringify($json.visual_prompt_en) }},\n  \"quality\": \"high\",\n  \"size\": \"1024x1536\",\n  \"n\": 1\n}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "httpOpenAIImage",
+      "name": "OpenAI gpt-image-1.5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2360, 380],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI"
+        }
+      },
+      "notes": "Se errore 'model not available', sostituisci gpt-image-1.5 con gpt-image-1 (legacy, +25% costo)."
+    },
+    {
+      "parameters": {
+        "content": "### 6. Composizione tipografia\n\nSharp sovrappone la frase sull'immagine generata.\n\n**Versione lavorativa**: SVG con ombra, font di sistema (Arial), capitalize per parola, wrapping ~32 char/linea, posizione top/bottom/split.\n\n**Step 6** raffinerà tutto: font custom da `/data/fonts`, kerning migliore, opzioni stencil.",
+        "height": 240,
+        "width": 360
+      },
+      "id": "stickyCompose",
+      "name": "✏️ Note: Tipografia",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2620, 80]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Composizione tipografia: testo bianco su immagine, posizione top/bottom/split.\n// Versione lavorativa: SVG overlay con font system, raffinata in Step 6 con font custom.\nconst sharp = require('sharp');\n\nconst item = $input.first();\nconst quote = item.json;\n\n// L'immagine arriva da OpenAI come b64_json\nconst openaiResp = $('OpenAI gpt-image-1.5').first().json;\nconst b64 = openaiResp.data && openaiResp.data[0] && openaiResp.data[0].b64_json;\nif (!b64) throw new Error('OpenAI ha risposto senza b64_json. Resp keys: ' + Object.keys(openaiResp).join(','));\nconst imgBuffer = Buffer.from(b64, 'base64');\n\n// Capitalize prima lettera di ogni parola (Unicode-aware)\nfunction capitalize(s) {\n  return s.replace(/(^|\\s)(\\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase());\n}\n\nfunction wrap(text, max = 32) {\n  const words = text.split(/\\s+/);\n  const lines = [];\n  let line = '';\n  for (const w of words) {\n    if ((line + ' ' + w).trim().length > max && line) {\n      lines.push(line.trim());\n      line = w;\n    } else {\n      line = line ? line + ' ' + w : w;\n    }\n  }\n  if (line) lines.push(line.trim());\n  return lines;\n}\n\nfunction escapeXML(s) {\n  return s\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&apos;');\n}\n\nconst W = 1080, H = 1350;\nconst phrase = capitalize(quote.quote_text);\nconst lines = wrap(phrase, 32);\nconst fontSize = 56;\nconst lineHeight = Math.round(fontSize * 1.3);\nconst pad = 100;\nconst pos = quote.text_position || 'bottom';\n\nlet textElems = '';\nfunction renderLine(line, y) {\n  return `<text x=\"${W/2}\" y=\"${y}\" font-family=\"'DejaVu Sans', Arial, sans-serif\" font-size=\"${fontSize}\" font-weight=\"700\" fill=\"white\" text-anchor=\"middle\" filter=\"url(#shadow)\">${escapeXML(line)}</text>`;\n}\n\nif (pos === 'split') {\n  const half = Math.ceil(lines.length / 2);\n  const top = lines.slice(0, half);\n  const bot = lines.slice(half);\n  top.forEach((l, i) => textElems += renderLine(l, pad + lineHeight + i * lineHeight));\n  bot.forEach((l, i) => textElems += renderLine(l, H - pad - (bot.length - 1 - i) * lineHeight));\n} else if (pos === 'top') {\n  lines.forEach((l, i) => textElems += renderLine(l, pad + lineHeight + i * lineHeight));\n} else {\n  // bottom (default)\n  const total = lines.length * lineHeight;\n  const startY = H - pad - total + lineHeight;\n  lines.forEach((l, i) => textElems += renderLine(l, startY + i * lineHeight));\n}\n\nconst svg = `<svg width=\"${W}\" height=\"${H}\" xmlns=\"http://www.w3.org/2000/svg\">\n  <defs>\n    <filter id=\"shadow\" x=\"-20%\" y=\"-20%\" width=\"140%\" height=\"140%\">\n      <feGaussianBlur in=\"SourceAlpha\" stdDeviation=\"6\"/>\n      <feOffset dx=\"0\" dy=\"2\"/>\n      <feComponentTransfer><feFuncA type=\"linear\" slope=\"1.5\"/></feComponentTransfer>\n      <feMerge><feMergeNode/><feMergeNode in=\"SourceGraphic\"/></feMerge>\n    </filter>\n  </defs>\n  ${textElems}\n</svg>`;\n\nconst composed = await sharp(imgBuffer)\n  .resize(W, H, { fit: 'cover' })\n  .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])\n  .png()\n  .toBuffer();\n\n// Filename: YYYYMMDD-HHmm-{first8charsOfQuote}.png\nconst pad2 = (n) => String(n).padStart(2, '0');\nconst d = new Date();\nconst stamp = `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}`;\nconst slug = (quote.quote_text || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'untitled';\nconst fileName = `${stamp}-${slug}.png`;\n\nreturn [{\n  json: {\n    ...quote,\n    image_filename: fileName,\n    image_size: composed.length\n  },\n  binary: {\n    data: {\n      data:     composed.toString('base64'),\n      mimeType: 'image/png',\n      fileName: fileName,\n      fileExtension: 'png'\n    }\n  }\n}];\n"
+      },
+      "id": "codeCompose",
+      "name": "Compose typography",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 380]
+    },
+    {
+      "parameters": {
+        "content": "### 7. Drive (drafts)\n\nCarica in `GOOGLE_DRIVE_FOLDER_ID_DRAFTS`. La move in `/approved/` avviene nel workflow callback quando approvi.\n\nTODO v2: subfolder mensili `YYYY-MM/`.",
+        "height": 200,
+        "width": 320
+      },
+      "id": "stickyDrive",
+      "name": "💾 Note: Drive upload",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [2900, 80]
+    },
+    {
+      "parameters": {
+        "name": "={{ $binary.data.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_DRIVE_FOLDER_ID_DRAFTS }}"
+        },
+        "options": {}
+      },
+      "id": "driveUpload",
+      "name": "Upload Drive (drafts)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2920, 380],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// INSERT del post in tabella `posts` con status='draft'.\n// Salva post_id e drive URL per il messaggio Telegram successivo.\nconst Database = require('better-sqlite3');\nconst DB_PATH = process.env.QUOTES_DB_PATH || '/data/database/quotes.db';\n\nconst quote = $('Compose typography').first().json;\nconst drive = $input.first().json; // output del nodo Drive Upload\n\nconst driveId  = drive.id || '';\nconst driveUrl = drive.webViewLink || drive.webContentLink || `https://drive.google.com/file/d/${driveId}/view`;\n\nconst db = new Database(DB_PATH);\nlet postId;\ntry {\n  const result = db.prepare(`\n    INSERT INTO posts (quote_id, quote_source, image_url_drive, status)\n    VALUES (?, ?, ?, 'draft')\n  `).run(quote.quote_id, quote.source_type, driveUrl);\n  postId = result.lastInsertRowid;\n} finally {\n  db.close();\n}\n\nreturn [{\n  json: {\n    ...quote,\n    post_id:          postId,\n    drive_file_id:    driveId,\n    image_url_drive:  driveUrl\n  },\n  binary: $input.first().binary  // mantieni il binario per il Telegram a valle\n}];\n"
+      },
+      "id": "codeInsertPost",
+      "name": "INSERT post (draft)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3160, 380]
+    },
+    {
+      "parameters": {
+        "content": "### 8. Telegram Send Photo\n\nManda l'immagine al `TELEGRAM_CHAT_ID` con:\n- Caption: frase + autore + tema/mood + post_id\n- Inline keyboard 2x2: ✅ Approva / 🔄 Rigenera img / 🔁 Cambia frase / ❌ Scarta\n\nIl callback_data è `<azione>:<post_id>`. Le azioni sono gestite dal workflow `alien-mind-callback`.",
+        "height": 240,
+        "width": 360
+      },
+      "id": "stickyTelegram",
+      "name": "📨 Note: Telegram",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [3380, 80]
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "additionalFields": {
+          "caption": "={{ '\"' + $json.quote_text + '\"\\n— ' + $json.author + ($json.source ? ' · ' + $json.source : '') + '\\n\\ntema: ' + $json.theme + ' · mood: ' + $json.mood + '\\nsorgente: ' + $json.source_type + ' · post #' + $json.post_id }}",
+          "reply_markup": "={{ JSON.stringify({inline_keyboard: [[{text: '✅ Approva', callback_data: 'approve:' + $json.post_id},{text: '🔄 Rigenera img', callback_data: 'regen:' + $json.post_id}],[{text: '🔁 Cambia frase', callback_data: 'change:' + $json.post_id},{text: '❌ Scarta', callback_data: 'discard:' + $json.post_id}]]}) }}"
+        }
+      },
+      "id": "telegramSend",
+      "name": "Send Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [3400, 380],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          { "node": "Decidi sorgente", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Schedule Trigger (off)": {
+      "main": [
+        [
+          { "node": "Decidi sorgente", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Da workflow (callback)": {
+      "main": [
+        [
+          { "node": "Decidi sorgente", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Decidi sorgente": {
+      "main": [
+        [
+          { "node": "Switch sorgente", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Switch sorgente": {
+      "main": [
+        [
+          { "node": "Aggiorna used_count", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Genera frase con OpenAI", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Aggiorna used_count": {
+      "main": [
+        [
+          { "node": "Merge", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Genera frase con OpenAI": {
+      "main": [
+        [
+          { "node": "Salva generated_quote", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Salva generated_quote": {
+      "main": [
+        [
+          { "node": "Merge", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          { "node": "Prompt visivo con OpenAI", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prompt visivo con OpenAI": {
+      "main": [
+        [
+          { "node": "Parse visual JSON", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse visual JSON": {
+      "main": [
+        [
+          { "node": "OpenAI gpt-image-1.5", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "OpenAI gpt-image-1.5": {
+      "main": [
+        [
+          { "node": "Compose typography", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Compose typography": {
+      "main": [
+        [
+          { "node": "Upload Drive (drafts)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Upload Drive (drafts)": {
+      "main": [
+        [
+          { "node": "INSERT post (draft)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "INSERT post (draft)": {
+      "main": [
+        [
+          { "node": "Send Telegram", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "alien-mind-error",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "timezone": "Europe/Rome"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "alien-mind-pipeline",
+  "tags": [
+    { "name": "alien-mind" }
+  ]
+}

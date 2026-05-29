@@ -1,0 +1,83 @@
+{
+  "name": "Alien Mind — Error notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 🚨 Alien Mind — Error notifier\n\nWorkflow di errore richiamato automaticamente da n8n quando un altro workflow nel progetto fallisce. Manda una notifica Telegram con i dettagli (workflow, nodo, timestamp, messaggio errore).\n\n**Come si attiva**:\n1. Importa questo workflow in n8n e attivalo\n2. Negli altri workflow (`alien-mind-pipeline`, `alien-mind-callback`), apri Settings → Error Workflow → seleziona `Alien Mind — Error notifier`\n3. Salva\n\nDa quel momento ogni execution fallita su quei workflow ti pinga su Telegram. Niente piu' bozze perse senza accorgersene.",
+        "height": 280,
+        "width": 460
+      },
+      "id": "stickyHeader",
+      "name": "📋 Header",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-100, -100]
+    },
+    {
+      "parameters": {},
+      "id": "errorTrigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [380, 280]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Costruisce il testo di notifica Markdown-safe.\nconst err = $input.first().json;\n\nconst workflow = err.workflow || {};\nconst execution = err.execution || {};\nconst lastNode = err.execution && err.execution.lastNodeExecuted ? err.execution.lastNodeExecuted : '?';\n\n// Errore: sui trigger node arriva come stringa, sugli altri come oggetto.\nconst errorMessage = (() => {\n  if (typeof err.error === 'string') return err.error;\n  if (err.execution && err.execution.error) {\n    const e = err.execution.error;\n    return e.message || e.description || JSON.stringify(e).slice(0, 500);\n  }\n  return 'errore sconosciuto';\n})();\n\nconst stamp = new Date().toLocaleString('it-IT', { timeZone: 'Europe/Rome' });\n\n// Markdown V2 di Telegram richiede escape — uso plain text per semplicita'.\nconst text =\n  '🚨 Alien Mind — errore workflow\\n\\n' +\n  'Workflow: ' + (workflow.name || workflow.id || '?') + '\\n' +\n  'Nodo:     ' + lastNode + '\\n' +\n  'Quando:   ' + stamp + '\\n\\n' +\n  'Errore:\\n' + errorMessage.slice(0, 1500);\n\nreturn [{ json: { text } }];\n"
+      },
+      "id": "codeFormat",
+      "name": "Format error message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 280]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "telegramNotify",
+      "name": "Telegram notify",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [880, 280],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          { "node": "Format error message", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Format error message": {
+      "main": [
+        [
+          { "node": "Telegram notify", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Rome"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "alien-mind-error",
+  "tags": [
+    { "name": "alien-mind" }
+  ]
+}

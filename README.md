@@ -1,6 +1,8 @@
 # Alien Mind — Pipeline n8n
 
-Sistema automatizzato per la pubblicazione di contenuti Instagram aforistico-surrealisti per il profilo **Alien Mind**, con review umana via Telegram. Mix 70% citazioni curate / 30% frasi originali generate da Claude, immagini surreali generate da GPT Image 1.5, composizione tipografica con Sharp, archivio su Google Drive.
+Sistema automatizzato per la pubblicazione di contenuti Instagram aforistico-surrealisti per il profilo **Alien Mind**, con review umana via Telegram. Mix 70% citazioni curate / 30% frasi originali generate da OpenAI gpt-5-mini, immagini surreali generate da GPT Image 1.5, composizione tipografica con Sharp, archivio su Google Drive.
+
+> **Una sola API key**: testo (gpt-5-mini) e immagini (gpt-image-1.5) usano entrambi OpenAI. Niente account Anthropic.
 
 > **Stato attuale**: Step 1 completato (setup ambiente). Gli step successivi popoleranno `database/`, `workflows/` e `scripts/`.
 
@@ -32,8 +34,7 @@ Alien_Automator/
 |---|---|---|
 | Docker Engine | 24+ | Su Linux installa anche `docker-compose-plugin` |
 | Docker Compose | v2 | Comando `docker compose` (non `docker-compose`) |
-| Account Anthropic | — | Con accesso a Claude Sonnet 4.6 |
-| Account OpenAI | — | **Organizzazione verificata** (richiesto per `gpt-image-1.5`) |
+| Account OpenAI | — | Una sola API key per testo + immagini. **Organizzazione verificata** richiesta per `gpt-image-1.5` (~5-10 min, documento d'identità) |
 | Bot Telegram | — | Creato via [@BotFather](https://t.me/botfather) |
 | Account Google | — | Con due cartelle Drive create per drafts/approved |
 | ngrok (solo dev) | — | Account gratuito + authtoken |
@@ -88,19 +89,16 @@ docker compose up -d --force-recreate n8n
 
 Una volta dentro l'editor (`http://localhost:5678`), prima dell'import dei workflow vanno create le credenziali condivise.
 
-1. **Anthropic** — *Settings → Credentials → New → "HTTP Header Auth"*
-   - Name: `Anthropic API`
-   - Header Name: `x-api-key`
-   - Header Value: `={{ $env.ANTHROPIC_API_KEY }}`
-   - Aggiungi un secondo header: `anthropic-version` = `2023-06-01`
+Servono **solo 3 credenziali** (testo e immagini condividono l'unica chiave OpenAI):
 
-2. **OpenAI** — *Credentials → New → "OpenAI"*
+1. **OpenAI** — *Settings → Credentials → New → "OpenAI"*
    - API Key: `={{ $env.OPENAI_API_KEY }}`
+   - Copre sia gpt-5-mini (testo) sia gpt-image-1.5 (immagini).
 
-3. **Telegram** — *Credentials → New → "Telegram"*
+2. **Telegram** — *Credentials → New → "Telegram"*
    - Access Token: `={{ $env.TELEGRAM_BOT_TOKEN }}`
 
-4. **Google Drive** — *Credentials → New → "Google Drive OAuth2 API"*
+3. **Google Drive** — *Credentials → New → "Google Drive OAuth2 API"*
    - Segui il flow OAuth (richiede progetto su Google Cloud Console con Drive API abilitata, vedi `docs/google-drive-setup.md` — verrà creato in Step 7).
 
 Le credenziali API vengono lette dalle variabili `.env` tramite le expression `$env.NOMEVAR`, quindi non vanno mai incollate in chiaro nei nodi.
@@ -114,21 +112,21 @@ Tariffe verificate ad aprile 2026:
 | Voce | Tariffa | Volume mensile | Costo |
 |---|---|---|---|
 | **GPT Image 1.5** (1024×1536, quality `high`) | $0.20 / immagine | 30 immagini + ~30% rigenerazioni ≈ **39 chiamate** | **$7.80** |
-| **Claude Sonnet 4.6** — generazione frase originale (30% del flusso) | $3 input / $15 output per 1M token | ~9 chiamate × ~2.2k token totali | **$0.08** |
-| **Claude Sonnet 4.6** — analisi visiva (su tutte le frasi) | $3 input / $15 output per 1M token | ~30 chiamate × ~1.8k token totali | **$0.27** |
+| **gpt-5-mini** — generazione frase originale (30% del flusso) | $0.25 input / $2.00 output per 1M token | ~9 chiamate × ~1k token | **$0.01** |
+| **gpt-5-mini** — analisi visiva (su tutte le frasi) | $0.25 input / $2.00 output per 1M token | ~39 chiamate × ~1.2k token | **$0.04** |
 | **Telegram Bot API** | gratuito | — | $0.00 |
 | **Google Drive** (entro 15 GB free tier) | gratuito | — | $0.00 |
 | **n8n self-hosted** | gratuito (community) | — | $0.00 |
-| **Totale stimato** | | | **~$8.15/mese** |
+| **Totale stimato** | | | **~$7.85/mese** |
 
-A cambio attuale (~1 USD ≈ 0.92 EUR): **~7.50 €/mese** per 30 contenuti, **~3.80 €/mese** per 15 contenuti.
+A cambio attuale (~1 USD ≈ 0.92 EUR): **~7.20 €/mese** per 30 contenuti, **~3.60 €/mese** per 15 contenuti.
 
-> La stima 5€/mese del brief è raggiungibile **senza rigenerazioni** e a 25 contenuti/mese: 25 × $0.20 + ~$0.30 LLM = $5.30 ≈ 4.90 €. Considerando il margine di rigenerazioni che farai durante il review, ~7-8 € è realistico. Restiamo ampiamente sotto il budget di 30 €.
+> Il costo è dominato quasi interamente dalla generazione immagini ($7.80). La parte testuale con gpt-5-mini è trascurabile (~$0.05/mese). La stima 5€/mese del brief è raggiungibile a ~25 contenuti/mese senza rigenerazioni: 25 × $0.20 + ~$0.04 = $5.04 ≈ 4.70 €. Restiamo ampiamente sotto il budget di 30 €.
 
 ### Note sui modelli
 
-- Il brief originale cita `gpt-image-1` (legacy, $0.25/img). Il default 2026 è **`gpt-image-1.5`** ($0.20/img high 1024×1536, ~4× più veloce, migliore preservazione del soggetto). Lo Step 3 userà `gpt-image-1.5` come modello di default — endpoint invariato: `POST https://api.openai.com/v1/images/generations`.
-- Claude Sonnet 4.6 (`claude-sonnet-4-6`) è il modello scelto. Endpoint: `POST https://api.anthropic.com/v1/messages` con header `anthropic-version: 2023-06-01`.
+- **Testo** (`gpt-5-mini`): genera le frasi originali e i prompt visivi. Endpoint `POST https://api.openai.com/v1/chat/completions` con `response_format: {type: "json_object"}` per garantire output JSON valido.
+- **Immagini** (`gpt-image-1.5`): il brief citava `gpt-image-1` (legacy, $0.25/img); il default 2026 è `gpt-image-1.5` ($0.20/img high 1024×1536, ~4× più veloce). Endpoint `POST https://api.openai.com/v1/images/generations`. Se la tua org non è verificata, fallback su `gpt-image-1` (+25% costo).
 
 ---
 
@@ -140,7 +138,7 @@ Motivazioni:
 - Zero dipendenze di rete → niente latenza extra né failure mode aggiuntivi
 - Niente servizio esterno da mantenere (un container in meno)
 - Sharp è battle-tested per composizione immagini in produzione
-- L'unico costo è una build iniziale ~2 min (vips + toolchain Alpine)
+- L'unico costo è una build iniziale ~1-2 min al primo `docker compose build` (npm install di sharp + better-sqlite3 con prebuilt binaries). Le build successive sono cached e pressoché istantanee.
 
 L'immagine n8n custom abilita anche `better-sqlite3` per i Code Node che leggono/scrivono il DB citazioni.
 
@@ -210,11 +208,95 @@ docker compose up -d --force-recreate
 
 ---
 
+## DB citazioni (Step 2)
+
+Lo schema vive in [database/schema.sql](database/schema.sql) e crea tre tabelle:
+- `quotes` — citazioni curate (70% del flusso)
+- `generated_quotes` — frasi generate da gpt-5-mini (30%) con `quality_score` 1-5 da compilare a mano dopo il review
+- `posts` — registro dei contenuti creati (link a una delle due tabelle sopra)
+
+Tutte le operazioni sul DB girano **dentro il container** (better-sqlite3 è installato lì, non sull'host).
+
+```bash
+# Seed iniziale: 19 citazioni verificate (7 filosofi + 7 scrittori + 5 mistici)
+sudo docker compose run --rm --entrypoint node n8n /data/scripts/seed-quotes.js
+
+# Aggiungere una citazione interattivamente (ti chiede testo, autore, tema, mood)
+sudo docker compose run --rm --entrypoint node n8n /data/scripts/add-quote.js
+
+# Aggiungere via flags (utile per script o batch)
+sudo docker compose run --rm --entrypoint node n8n /data/scripts/add-quote.js \
+  --text "..." --author "Mezzosangue" --source "Tetragramma" \
+  --theme "consapevolezza_sé" --mood "tagliente"
+
+# Test end-to-end del DB (seed + add-quote + idempotenza + validazione)
+sudo bash scripts/test-step2.sh
+```
+
+> **Slot rapper italiani**: il seed *non* include citazioni di Mezzosangue / Caparezza / Rancore / Murubutu. Il brief richiede wording verificato e io non posso garantire al 100% i testi delle barre — li aggiungi tu via `add-quote.js` coi testi originali da Genius/booklet. La distribuzione attesa è ~6 quote rap per arrivare a 25 totali.
+
+Il DB vive su bind-mount in `database/quotes.db` (host) ⇄ `/data/database/quotes.db` (container). Lo backuppi semplicemente copiando il file:
+```bash
+cp database/quotes.db database/backups/quotes-$(date +%Y%m%d).db
+```
+
+---
+
+## Workflow n8n (Step 3)
+
+Tre workflow JSON importabili in `workflows/`:
+
+| File | Cosa fa | Trigger |
+|---|---|---|
+| [alien-mind-pipeline.json](workflows/alien-mind-pipeline.json) | Pipeline principale: decide sorgente (70% curated / 30% generated) → gpt-5-mini visual prompt → GPT Image 1.5 → Sharp typography → Drive upload → Telegram review | Manual + Schedule (off) + Execute Workflow |
+| [alien-mind-callback.json](workflows/alien-mind-callback.json) | Gestisce le 4 azioni inline (Approva / Rigenera img / Cambia frase / Scarta). Approve sposta su Drive, Discard cancella, Regen/Change richiamano la pipeline via Execute Workflow | Webhook POST `/webhook/alien-mind-callback` |
+| [alien-mind-error.json](workflows/alien-mind-error.json) | Notifica Telegram quando un altro workflow fallisce. Da assegnare come Error Workflow nei Settings degli altri due | Error Trigger |
+
+### Import in n8n
+
+1. Apri **http://localhost:5678** → Workflows → ⋯ → **Import from File**
+2. Importa **`alien-mind-error.json`** *per primo* e attivalo (gli altri due lo referenziano)
+3. Importa **`alien-mind-pipeline.json`**, poi **`alien-mind-callback.json`**
+
+### Mappare le credenziali
+
+Tutti i nodi che usano API esterne hanno `credentials.id = "REPLACE_ME"`. n8n te lo segnala con un'icona rossa ⚠️ — clicca sul nodo e seleziona la credential giusta dal menu. Una volta sola: si propagano agli altri nodi dello stesso tipo.
+
+| Tipo credential | Nodo n8n usato | Note |
+|---|---|---|
+| OpenAI | "Genera frase con OpenAI", "Prompt visivo con OpenAI", "OpenAI gpt-image-1.5" | API Key = `={{ $env.OPENAI_API_KEY }}` — un'unica credential per tutti e tre |
+| Telegram | tutti i nodi Telegram | Access Token = `={{ $env.TELEGRAM_BOT_TOKEN }}` |
+| Google Drive OAuth2 | "Upload Drive", "Drive: move", "Drive: delete" | Flow OAuth — vedi [docs.n8n.io/integrations/builtin/credentials/googledrive/](https://docs.n8n.io/integrations/builtin/credentials/google/) |
+
+### Caveat importanti dopo l'import
+
+- **Execute Workflow ID**: i nodi "Execute alien-mind-pipeline" nel callback referenziano il workflow per nome. Dopo l'import, n8n potrebbe chiederti di selezionarlo dal dropdown — fallo una volta per regen e una per change.
+- **Webhook URL**: il webhook Telegram lavora solo via HTTPS. In dev locale serve ngrok (vedi sopra). Una volta avviato, registra il webhook con:
+  ```bash
+  curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=$WEBHOOK_URL/webhook/alien-mind-callback"
+  curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
+  ```
+- **Edit message Telegram**: i nodi `editMessageText` (post approve/discard) potrebbero fallire se il messaggio originale era una `sendPhoto` (Telegram richiede `editMessageCaption`). Tweak in UI se vedi errore — n8n lo segnala chiaramente.
+
+### Cosa NON è ancora finalizzato (Step 4-6)
+
+- I **system prompt** dentro "Genera frase con OpenAI" e "Prompt visivo con OpenAI" sono **versioni lavorative** — funzionano ma non sono calibrate al massimo. Lo Step 4 e Step 5 li sostituiranno con prompt completi + few-shot.
+- Il **Code Node "Compose typography"** usa font di sistema (DejaVu/Arial) e SVG overlay base. Lo Step 6 produrrà un modulo `scripts/compose-image.js` con font custom da `/data/fonts/`, kerning migliore e gestione `top|bottom|split` raffinata.
+
+### Test rapido manuale
+
+1. Apri il workflow `alien-mind-pipeline` → click **Execute Workflow** (senza modifiche)
+2. Dovresti vedere ogni nodo eseguirsi in sequenza
+3. Alla fine ricevi su Telegram un messaggio foto con i 4 bottoni
+4. Premi **Approva** → il file si sposta su `/approved/` e il messaggio si aggiorna
+
+---
+
 ## Prossimi step
 
-- [x] **Step 1** — Setup ambiente (questo)
-- [ ] **Step 2** — Schema DB + script seed con 25 citazioni curate
-- [ ] **Step 3** — Workflow n8n principale (`workflows/alien-mind-pipeline.json`)
+- [x] **Step 1** — Setup ambiente
+- [x] **Step 2** — Schema DB + seed di 19 citazioni curate (+ slot rap a tua cura)
+- [x] **Step 3** — 3 workflow n8n (pipeline + callback + error notifier)
 - [ ] **Step 4** — System prompt generazione frase originale
 - [ ] **Step 5** — System prompt analisi visiva → prompt GPT Image 1.5
 - [ ] **Step 6** — Modulo Sharp per tipografia (`scripts/compose-image.js`)
